@@ -4,7 +4,7 @@ use nom::{
     character::complete::{digit1, u64},
     combinator::map_parser,
     multi::length_data,
-    sequence::{delimited,terminated},
+    sequence::{delimited, terminated},
     IResult,
 };
 use serde::{
@@ -47,7 +47,7 @@ pub fn from_bytes<'a, T: Deserialize<'a>>(i: &'a [u8]) -> Result<T, Error> {
     if deserializer.input.len() <= deserializer.pos {
         Ok(t)
     } else {
-        Err(Error::Message("trailing bytes".to_string()))
+        Err(Error::TrailingBytes)
     }
 }
 
@@ -58,12 +58,12 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        match self.input[self.pos] {
+        match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
             b'i' => self.deserialize_u64(visitor),
             b'0'..=b'9' => self.deserialize_bytes(visitor),
             b'l' => self.deserialize_seq(visitor),
             b'd' => self.deserialize_map(visitor),
-            _ => Err(Error::Message("no match on any".to_string())),
+            _ => Err(Error::NoMatch),
         }
     }
 
@@ -74,32 +74,32 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         Err(Error::Unimplemented)
     }
 
-    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_i8<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_u64(visitor)
+        Err(Error::Unimplemented)
     }
 
-    fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_i16<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_u64(visitor)
+        Err(Error::Unimplemented)
     }
 
-    fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_i32<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_u64(visitor)
+        Err(Error::Unimplemented)
     }
 
-    fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_i64<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_u64(visitor)
+        Err(Error::Unimplemented)
     }
 
     fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -128,7 +128,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: serde::de::Visitor<'de>,
     {
         let len = self.input.len();
-        let res = int(&self.input[self.pos..]).map_err(|e| Error::Message(e.to_string()))?;
+        let res = int(self.input.get(self.pos..).ok_or(Error::EndOfBytes)?).map_err(|_| Error::Integer)?;
         self.pos = len - res.0.len();
         visitor.visit_u64(res.1)
     }
@@ -159,9 +159,9 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: serde::de::Visitor<'de>,
     {
         let len = self.input.len();
-        let res = str(&self.input[self.pos..]).map_err(|e| Error::Message(e.to_string()))?;
+        let res = str(self.input.get(self.pos..).ok_or(Error::EndOfBytes)?).map_err(|_| Error::String)?;
         self.pos = len - res.0.len();
-        let str = std::str::from_utf8(res.1).map_err(|e| Error::Message(e.to_string()))?;
+        let str = std::str::from_utf8(res.1).map_err(|_| Error::String)?;
 
         visitor.visit_borrowed_str(str)
     }
@@ -178,7 +178,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: serde::de::Visitor<'de>,
     {
         let len = self.input.len();
-        let res = str(&self.input[self.pos..]).map_err(|e| Error::Message(e.to_string()))?;
+        let res = str(self.input.get(self.pos..).ok_or(Error::EndOfBytes)?).map_err(|_| Error::String)?;
         self.pos = len - res.0.len();
         visitor.visit_borrowed_bytes(res.1)
     }
@@ -194,25 +194,25 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_some(self)   
+        visitor.visit_some(self)
     }
 
-    fn deserialize_unit<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        Err(Error::Unimplemented)
+        visitor.visit_unit()
     }
 
     fn deserialize_unit_struct<V>(
         self,
         _name: &'static str,
-        _visitor: V,
+        visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        Err(Error::Unimplemented)
+        visitor.visit_unit()
     }
 
     fn deserialize_newtype_struct<V>(
@@ -223,26 +223,26 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        visitor.visit_newtype_struct(self)
+        self.deserialize_any(visitor)
     }
 
     fn deserialize_seq<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: serde::de::Visitor<'de>,
     {
-        match self.input[self.pos] {
+        match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
             b'l' => {
                 self.pos += 1;
                 let seq = visitor.visit_seq(SeqMap::new(&mut self))?;
-                match self.input[self.pos] {
+                match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
                     b'e' => {
                         self.pos += 1;
                         Ok(seq)
                     }
-                    _ => Err(Error::Message("seq end de error".to_string())),
+                    _ => Err(Error::End),
                 }
             }
-            _ => Err(Error::Message("seq start de error".to_string())),
+            _ => Err(Error::Start),
         }
     }
 
@@ -269,19 +269,19 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        match self.input[self.pos] {
+        match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
             b'd' => {
                 self.pos += 1;
                 let map = visitor.visit_map(SeqMap::new(&mut self))?;
-                match self.input[self.pos] {
+                match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
                     b'e' => {
                         self.pos += 1;
                         Ok(map)
                     }
-                    _ => Err(Error::Message("map end de error".to_string())),
+                    _ => Err(Error::Start),
                 }
             }
-            _ => Err(Error::Message("map start de error".to_string())),
+            _ => Err(Error::End),
         }
     }
 
@@ -306,26 +306,26 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        match self.input[self.pos] {
+        match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
             b'0'..=b'9' => {
                 let len = self.input.len();
                 let res =
-                    str(&self.input[self.pos..]).map_err(|e| Error::Message(e.to_string()))?;
+                    str(self.input.get(self.pos..).ok_or(Error::EndOfBytes)?).map_err(|_| Error::String)?;
                 self.pos = len - res.0.len();
                 visitor.visit_enum(std::str::from_utf8(res.1).unwrap().into_deserializer())
             }
             b'd' => {
                 self.pos += 1;
                 let value = visitor.visit_enum(Enum::new(self))?;
-                match self.input[self.pos] {
+                match self.input.get(self.pos).ok_or(Error::EndOfBytes)? {
                     b'e' => {
                         self.pos += 1;
                         Ok(value)
                     }
-                    _ => Err(Error::Message("enum end de error".to_string())),
+                    _ => Err(Error::End),
                 }
             }
-            _ => Err(Error::Message("enum start de error".to_string())),
+            _ => Err(Error::Start),
         }
     }
 
@@ -361,7 +361,7 @@ impl<'de, 'a> de::SeqAccess<'de> for SeqMap<'a, 'de> {
     where
         T: de::DeserializeSeed<'de>,
     {
-        match self.de.input[self.de.pos] {
+        match self.de.input.get(self.de.pos).ok_or(Error::EndOfBytes)? {
             b'e' => Ok(None),
             _ => seed.deserialize(&mut *self.de).map(Some),
         }
@@ -375,7 +375,7 @@ impl<'de, 'a> de::MapAccess<'de> for SeqMap<'a, 'de> {
     where
         K: de::DeserializeSeed<'de>,
     {
-        match self.de.input[self.de.pos] {
+        match self.de.input.get(self.de.pos).ok_or(Error::EndOfBytes)?{
             b'e' => Ok(None),
             _ => seed.deserialize(&mut *self.de).map(Some),
         }
@@ -415,7 +415,7 @@ impl<'de, 'a> VariantAccess<'de> for Enum<'a, 'de> {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Self::Error> {
-        Err(Error::Message("unit variant".to_string()))
+        Ok(())
     }
 
     fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
